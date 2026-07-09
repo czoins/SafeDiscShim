@@ -1,0 +1,68 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/vcpkg_installed
+            ~\AppData\Local\vcpkg\archives
+          key: vcpkg-x86-static-${{ hashFiles('src/vcpkg.json', 'src/CMakeLists.txt') }}
+          restore-keys: |
+            vcpkg-x86-static-
+
+      - name: Print toolchain versions
+        shell: pwsh
+        run: |
+          Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
+          cmake --version | Select-Object -First 1
+          & "$env:VCPKG_ROOT\vcpkg.exe" version 2>&1 | Select-Object -First 1
+
+      - name: Configure (CMake)
+        shell: pwsh
+        run: |
+          cmake -B build -S src `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x86-windows-static `
+            -G "Visual Studio 17 2022" `
+            -A Win32
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $dll = Get-ChildItem -Path build -Recurse -Filter "drvmgt.dll" |
+                 Where-Object { $_.DirectoryName -match 'Release' } |
+                 Select-Object -First 1
+          if (-not $dll) { throw "drvmgt.dll not found in build output" }
+          Copy-Item $dll.FullName -Destination artifacts\drvmgt.dll
+          Copy-Item SafeDiscShim.sdb -Destination artifacts\SafeDiscShim.sdb
+          Write-Host "Staged artifacts:"
+          Get-ChildItem artifacts | Format-Table Name, Length, LastWriteTime
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SafeDiscShim
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
