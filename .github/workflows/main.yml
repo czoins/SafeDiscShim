@@ -13,26 +13,36 @@ jobs:
   build:
     runs-on: windows-latest
 
+    env:
+      # Pre-installed vcpkg on windows-latest lives here. The VCPKG_ROOT env var
+      # is NOT reliably set by the runner image anymore, so we set it explicitly.
+      VCPKG_ROOT: C:\vcpkg
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache vcpkg
+      - name: Verify vcpkg is available
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:VCPKG_ROOT\vcpkg.exe")) {
+            throw "vcpkg.exe not found at $env:VCPKG_ROOT. " +
+                  "Runner image may have changed."
+          }
+          & "$env:VCPKG_ROOT\vcpkg.exe" version
+          Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
+          cmake --version | Select-Object -First 1
+
+      - name: Cache vcpkg installed packages
         uses: actions/cache@v4
         with:
           path: |
             build/vcpkg_installed
-            ~\AppData\Local\vcpkg\archives
-          key: vcpkg-x86-static-${{ hashFiles('src/vcpkg.json', 'src/CMakeLists.txt') }}
+            C:\Users\runneradmin\AppData\Local\vcpkg\archives
+          key: vcpkg-x86-static-${{ hashFiles('src/vcpkg.json', 'src/CMakeLists.txt') }}-${{ runner.os }}
           restore-keys: |
+            vcpkg-x86-static-${{ hashFiles('src/vcpkg.json', 'src/CMakeLists.txt') }}-
             vcpkg-x86-static-
-
-      - name: Print toolchain versions
-        shell: pwsh
-        run: |
-          Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
-          cmake --version | Select-Object -First 1
-          & "$env:VCPKG_ROOT\vcpkg.exe" version 2>&1 | Select-Object -First 1
 
       - name: Configure (CMake)
         shell: pwsh
@@ -46,16 +56,32 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Stage artifacts
+      - name: Locate and stage artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          $dll = Get-ChildItem -Path build -Recurse -Filter "drvmgt.dll" |
-                 Where-Object { $_.DirectoryName -match 'Release' } |
+
+          # The VS generator places the DLL at either:
+          #   build/Release/drvmgt.dll               (flat layout)
+          #   build/SafeDiscShim/Release/drvmgt.dll  (target-named layout)
+          # Search both.
+          $dll = Get-ChildItem -Path build -Recurse -Filter "drvmgt.dll" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.DirectoryName -match '\\Release\\?' -or $_.DirectoryName -match '\\Release$' } |
                  Select-Object -First 1
-          if (-not $dll) { throw "drvmgt.dll not found in build output" }
-          Copy-Item $dll.FullName -Destination artifacts\drvmgt.dll
-          Copy-Item SafeDiscShim.sdb -Destination artifacts\SafeDiscShim.sdb
+          if (-not $dll) {
+            Write-Host "build/ tree contents:"
+            Get-ChildItem -Path build -Recurse -Filter "*.dll" | Format-Table FullName
+            throw "drvmgt.dll not found in build output"
+          }
+          Write-Host "Found DLL: $($dll.FullName)"
+          Copy-Item $dll.FullName -Destination artifacts\drvmgt.dll -Force
+
+          if (Test-Path SafeDiscShim.sdb) {
+            Copy-Item SafeDiscShim.sdb -Destination artifacts\SafeDiscShim.sdb -Force
+          } else {
+            throw "SafeDiscShim.sdb not found at repo root"
+          }
+
           Write-Host "Staged artifacts:"
           Get-ChildItem artifacts | Format-Table Name, Length, LastWriteTime
 
