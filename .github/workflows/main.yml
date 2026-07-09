@@ -77,7 +77,7 @@ jobs:
           # Verify CMake supports this generator
           $cmakeHelp = cmake --help
           if (-not ($cmakeHelp -match [regex]::Escape($generator))) {
-            throw @"CMake does not support generator '$generator'."@
+            throw "cmake does not support generator '$generator'."
           }
           Write-Host "CMake supports generator '$generator' ✓"
 
